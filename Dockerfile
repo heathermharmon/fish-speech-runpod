@@ -62,12 +62,16 @@ RUN if [ -f requirements.txt ]; then \
     fi
 
 # ── Download model weights at build time ──────────────────────────────────────
-RUN huggingface-cli download fishaudio/fish-speech-1.5 \
-    --local-dir /app/checkpoints/fish-speech-1.5 \
-    --exclude "*.git*"
+RUN python3 -c "\
+from huggingface_hub import snapshot_download; \
+snapshot_download(\
+    'fishaudio/fish-speech-1.5', \
+    local_dir='/app/checkpoints/fish-speech-1.5', \
+    ignore_patterns=['*.git*'] \
+)"
 
 # Cache buster — bump to force rebuild
-ARG CACHE_BUST=2026-02-27b
+ARG CACHE_BUST=2026-02-27c
 
 # ── Copy handler ──────────────────────────────────────────────────────────────
 WORKDIR /app
