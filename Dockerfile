@@ -39,6 +39,7 @@ RUN git checkout tags/v1.5.0
 RUN pip3 install --no-cache-dir \
     "numpy<=1.26.4" \
     "transformers>=4.45.2" \
+    "hydra-core>=1.3.2" \
     "natsort>=8.4.0" \
     "einops>=0.7.0" \
     "librosa>=0.10.1" \
@@ -57,6 +58,9 @@ RUN pip3 install --no-cache-dir \
     "pydantic==2.9.2" \
     "cachetools" \
     "soundfile" \
+    "pydub" \
+    "grpcio>=1.58.0" \
+    "opencc-python-reimplemented==0.1.7" \
     "silero-vad" \
     "huggingface_hub" \
     "runpod"
@@ -65,7 +69,7 @@ RUN pip3 install --no-cache-dir \
 ENV PYTHONPATH="/app/fish-speech:${PYTHONPATH}"
 
 # ── Cache buster ──────────────────────────────────────────────────────────────
-ARG CACHE_BUST=2026-03-30b
+ARG CACHE_BUST=2026-03-30c
 
 # ── Copy handler ──────────────────────────────────────────────────────────────
 WORKDIR /app
