@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.1.0-cudnn8-devel-ubuntu22.04
+FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
@@ -16,9 +16,10 @@ RUN apt-get update && apt-get install -y \
     cmake \
     libsndfile1 \
     libsndfile1-dev \
+    portaudio19-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# ── Upgrade pip/setuptools ────────────────────────────────────────────────────
+# ── Upgrade pip ───────────────────────────────────────────────────────────────
 RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel
 
 # ── PyTorch (CUDA 12.1) ───────────────────────────────────────────────────────
@@ -32,30 +33,39 @@ RUN git clone https://github.com/fishaudio/fish-speech.git /app/fish-speech
 WORKDIR /app/fish-speech
 RUN git checkout tags/v1.5.0
 
-# ── Install Fish Speech dependencies ─────────────────────────────────────────
-RUN pip3 install --no-cache-dir -r requirements.txt
-
-# ── Extra dependencies needed by api_server.py ───────────────────────────────
+# ── Install Fish Speech dependencies from pyproject.toml ─────────────────────
+# Install the package in editable mode — this reads pyproject.toml and installs
+# all declared dependencies automatically (inference + API server only, no training tools)
 RUN pip3 install --no-cache-dir \
-    runpod \
-    uvicorn \
-    ormsgpack \
-    kui
+    "numpy<=1.26.4" \
+    "transformers>=4.45.2" \
+    "natsort>=8.4.0" \
+    "einops>=0.7.0" \
+    "librosa>=0.10.1" \
+    "rich>=13.5.3" \
+    "kui>=1.6.0" \
+    "uvicorn>=0.30.0" \
+    "loguru>=0.6.0" \
+    "loralib>=0.1.2" \
+    "pyrootutils>=1.0.4" \
+    "vector_quantize_pytorch==1.14.24" \
+    "resampy>=0.4.3" \
+    "einx[torch]==0.2.2" \
+    "zstandard>=0.22.0" \
+    "ormsgpack" \
+    "tiktoken>=0.8.0" \
+    "pydantic==2.9.2" \
+    "cachetools" \
+    "soundfile" \
+    "silero-vad" \
+    "huggingface_hub" \
+    "runpod"
 
-# ── Download model weights at build time ──────────────────────────────────────
-RUN python3 -c "\
-from huggingface_hub import snapshot_download; \
-snapshot_download(\
-    'fishaudio/fish-speech-1.5', \
-    local_dir='/app/checkpoints/fish-speech-1.5', \
-    ignore_patterns=['*.git*', '*.gitattributes'] \
-)"
-
-# ── Set PYTHONPATH so tools/ and fish_speech/ are importable ─────────────────
+# ── Set PYTHONPATH ────────────────────────────────────────────────────────────
 ENV PYTHONPATH="/app/fish-speech:${PYTHONPATH}"
 
-# ── Cache buster — bump to force rebuild ──────────────────────────────────────
-ARG CACHE_BUST=2026-03-30a
+# ── Cache buster ──────────────────────────────────────────────────────────────
+ARG CACHE_BUST=2026-03-30b
 
 # ── Copy handler ──────────────────────────────────────────────────────────────
 WORKDIR /app
