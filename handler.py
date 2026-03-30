@@ -210,7 +210,7 @@ def call_tts(text, voice_ref_b64, reference_text="", fmt="mp3"):
             }
         ],
         "streaming": False,
-        "normalize": True,
+        "normalize": False,  # Preserve emotion tags [happy][sad] etc
     }
 
     body = json.dumps(payload).encode("utf-8")
