@@ -2,25 +2,6 @@
 """
 RunPod Serverless Handler for Fish Speech 1.5 Voice Cloning
 Starts Fish Speech's API server, then proxies requests to it.
-
-Input:
-    {
-        "input": {
-            "text": "Text (supports [happy] [sad] [angry] [whisper] [cry] tags)",
-            "voice_reference": "<base64_encoded_audio>",
-            "reference_text": "Optional transcript of reference audio",
-            "format": "mp3"
-        }
-    }
-
-Output:
-    {
-        "success": true,
-        "audio_base64": "<base64_encoded_audio>",
-        "duration": 5.23,
-        "generation_time": 2.15,
-        "model": "fish-speech-1.5"
-    }
 """
 
 import os
@@ -43,15 +24,17 @@ API_BASE = f"http://127.0.0.1:{API_PORT}"
 
 _server_process = None
 _server_ready = False
+_server_log_file = None
 
 
 def download_model():
     """Download Fish Speech 1.5 model weights from HuggingFace if not present."""
     if os.path.isdir(CHECKPOINT_DIR) and len(os.listdir(CHECKPOINT_DIR)) > 3:
-        print(f"[STARTUP] Model already present at {CHECKPOINT_DIR}")
+        print(f"[STARTUP] Model already present at {CHECKPOINT_DIR}", flush=True)
+        print(f"[STARTUP] Files: {os.listdir(CHECKPOINT_DIR)}", flush=True)
         return True
 
-    print("[STARTUP] Downloading Fish Speech 1.5 model (~5GB)...")
+    print("[STARTUP] Downloading Fish Speech 1.5 model (~5GB)...", flush=True)
     try:
         from huggingface_hub import snapshot_download
         snapshot_download(
@@ -59,18 +42,25 @@ def download_model():
             local_dir=CHECKPOINT_DIR,
             ignore_patterns=["*.git*", "*.gitattributes"],
         )
-        print("[STARTUP] Model downloaded successfully")
+        print("[STARTUP] Model downloaded successfully", flush=True)
+        print(f"[STARTUP] Files: {os.listdir(CHECKPOINT_DIR)}", flush=True)
         return True
     except Exception as e:
-        print(f"[STARTUP] Model download failed: {e}")
+        print(f"[STARTUP] Model download failed: {e}", flush=True)
         return False
 
 
 def _has_cuda():
     try:
         import torch
-        return torch.cuda.is_available()
-    except Exception:
+        avail = torch.cuda.is_available()
+        if avail:
+            print(f"[CUDA] CUDA available: {torch.cuda.get_device_name(0)}", flush=True)
+        else:
+            print("[CUDA] CUDA not available, using CPU", flush=True)
+        return avail
+    except Exception as e:
+        print(f"[CUDA] torch check failed: {e}", flush=True)
         return False
 
 
@@ -83,7 +73,15 @@ def wait_for_server(timeout=480):
         if _server_process is not None:
             ret = _server_process.poll()
             if ret is not None:
-                print(f"[SERVER] Server process exited with code {ret}!")
+                print(f"[SERVER] Server process exited with code {ret}!", flush=True)
+                # Read captured log
+                if _server_log_file:
+                    try:
+                        with open(_server_log_file, "r") as f:
+                            log = f.read()
+                        print(f"[SERVER LOG]\n{log[-3000:]}", flush=True)
+                    except Exception:
+                        pass
                 return False
 
         try:
@@ -100,21 +98,28 @@ def wait_for_server(timeout=480):
         except Exception:
             pass
 
-        # Log progress every 30 seconds
         now = time.time()
         if now - last_log >= 30:
             elapsed = int(now - (deadline - timeout))
             remaining = int(deadline - now)
-            print(f"[SERVER] Still waiting for server... {elapsed}s elapsed, {remaining}s remaining")
+            print(f"[SERVER] Waiting... {elapsed}s elapsed, {remaining}s remaining", flush=True)
             last_log = now
 
         time.sleep(3)
+    # Timeout — read log
+    if _server_log_file:
+        try:
+            with open(_server_log_file, "r") as f:
+                log = f.read()
+            print(f"[SERVER TIMEOUT LOG]\n{log[-3000:]}", flush=True)
+        except Exception:
+            pass
     return False
 
 
 def start_server():
     """Start Fish Speech API server as a background subprocess."""
-    global _server_process, _server_ready
+    global _server_process, _server_ready, _server_log_file
 
     if _server_ready:
         return True
@@ -124,22 +129,22 @@ def start_server():
         CHECKPOINT_DIR, "firefly-gan-vq-fsq-8x1024-21hz-generator.pth"
     )
     if not os.path.exists(decoder_pth):
-        # Try to find any .pth file
         for fname in os.listdir(CHECKPOINT_DIR):
             if fname.endswith(".pth"):
                 decoder_pth = os.path.join(CHECKPOINT_DIR, fname)
                 break
 
     if not os.path.exists(decoder_pth):
-        print(f"[SERVER] No decoder checkpoint found in {CHECKPOINT_DIR}!")
-        print(f"[SERVER] Files present: {os.listdir(CHECKPOINT_DIR)}")
+        print(f"[SERVER] No .pth decoder file found in {CHECKPOINT_DIR}!", flush=True)
+        print(f"[SERVER] Files present: {os.listdir(CHECKPOINT_DIR)}", flush=True)
         return False
 
     device = "cuda" if _has_cuda() else "cpu"
-    print(f"[SERVER] Starting Fish Speech API server on {device}...")
-    print(f"[SERVER] Checkpoint dir: {CHECKPOINT_DIR}")
-    print(f"[SERVER] Decoder path: {decoder_pth}")
-    print(f"[SERVER] Files in checkpoint dir: {os.listdir(CHECKPOINT_DIR)}")
+    print(f"[SERVER] Starting Fish Speech on {device} | decoder: {decoder_pth}", flush=True)
+
+    # Capture server output to a log file so we can read it on crash
+    _server_log_file = "/tmp/fish_speech_server.log"
+    log_fh = open(_server_log_file, "w")
 
     cmd = [
         sys.executable,
@@ -153,29 +158,31 @@ def start_server():
 
     env = os.environ.copy()
     env["PYTHONPATH"] = FISH_SPEECH_DIR + ":" + env.get("PYTHONPATH", "")
+    env["PYTHONUNBUFFERED"] = "1"
+
+    print(f"[SERVER] Command: {' '.join(cmd)}", flush=True)
 
     _server_process = subprocess.Popen(
         cmd,
         cwd=FISH_SPEECH_DIR,
         env=env,
-        stdout=sys.stdout,
-        stderr=sys.stderr,
+        stdout=log_fh,
+        stderr=subprocess.STDOUT,
     )
 
-    print(f"[SERVER] PID {_server_process.pid}, waiting for ready (up to 8 min)...")
+    print(f"[SERVER] PID {_server_process.pid}, waiting (up to 8 min)...", flush=True)
 
     if wait_for_server(timeout=480):
         _server_ready = True
-        print("[SERVER] Fish Speech API server is ready!")
+        print("[SERVER] Fish Speech API server is ready!", flush=True)
         return True
     else:
         ret = _server_process.poll()
-        print(f"[SERVER] Fish Speech API server failed to start (process exit code: {ret})")
+        print(f"[SERVER] Failed to start (exit code: {ret})", flush=True)
         return False
 
 
 def get_audio_duration_estimate(audio_bytes, fmt="mp3"):
-    """Estimate audio duration from file size."""
     if fmt == "mp3":
         return round(len(audio_bytes) / 24000, 1)
     elif fmt == "wav":
@@ -193,7 +200,6 @@ def get_audio_duration_estimate(audio_bytes, fmt="mp3"):
 
 
 def call_tts(text, voice_ref_b64, reference_text="", fmt="mp3"):
-    """POST to local Fish Speech API server, return raw audio bytes."""
     payload = {
         "text": text,
         "format": fmt,
@@ -224,7 +230,19 @@ def handler(event):
 
     if not _server_ready:
         if not start_server():
-            return {"error": "Fish Speech server failed to start", "success": False}
+            # Include log snippet in error
+            log_snippet = ""
+            if _server_log_file:
+                try:
+                    with open(_server_log_file, "r") as f:
+                        log_snippet = f.read()[-500:]
+                except Exception:
+                    pass
+            return {
+                "error": "Fish Speech server failed to start",
+                "log": log_snippet,
+                "success": False,
+            }
 
     input_data = event.get("input", {})
     text = input_data.get("text", "").strip()
@@ -237,25 +255,24 @@ def handler(event):
     if not voice_ref_b64:
         return {"error": "Missing voice_reference parameter", "success": False}
 
-    print(f"[HANDLER] Synthesizing {len(text)} chars | format={fmt}")
-
+    print(f"[HANDLER] Synthesizing {len(text)} chars | format={fmt}", flush=True)
     gen_start = time.time()
 
     try:
         audio_bytes = call_tts(text, voice_ref_b64, reference_text, fmt)
     except urllib.error.HTTPError as e:
         err_body = e.read().decode("utf-8", errors="replace")
-        print(f"[HANDLER] API error {e.code}: {err_body[:300]}")
+        print(f"[HANDLER] API error {e.code}: {err_body[:300]}", flush=True)
         return {"error": f"Fish Speech error {e.code}: {err_body[:200]}", "success": False}
     except Exception as e:
-        print(f"[HANDLER] TTS call failed: {e}")
+        print(f"[HANDLER] TTS call failed: {e}", flush=True)
         return {"error": str(e), "success": False}
 
     gen_time = round(time.time() - gen_start, 2)
     duration = get_audio_duration_estimate(audio_bytes, fmt)
     audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
 
-    print(f"[HANDLER] Generated {duration}s in {gen_time}s ({len(audio_bytes)//1024}KB)")
+    print(f"[HANDLER] Generated {duration}s in {gen_time}s ({len(audio_bytes)//1024}KB)", flush=True)
 
     return {
         "success": True,
@@ -268,12 +285,11 @@ def handler(event):
 
 
 if __name__ == "__main__":
-    print("[STARTUP] Fish Speech 1.5 RunPod Serverless Handler")
+    print("[STARTUP] Fish Speech 1.5 RunPod Serverless Handler", flush=True)
 
-    # Download model at startup (before accepting jobs)
     if not download_model():
-        print("[STARTUP] Cannot proceed without model. Exiting.")
+        print("[STARTUP] Cannot proceed without model. Exiting.", flush=True)
         sys.exit(1)
 
-    print("[STARTUP] Starting RunPod serverless worker loop...")
+    print("[STARTUP] Starting RunPod serverless worker loop...", flush=True)
     runpod.serverless.start({"handler": handler})
