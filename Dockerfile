@@ -34,15 +34,7 @@ WORKDIR /app/fish-speech
 RUN git checkout tags/v1.5.0
 
 # ── Patch model_manager.py: make funasr import optional (ASR only, not TTS) ──
-RUN python3 -c "
-content = open('tools/server/model_manager.py').read()
-patched = content.replace(
-    'from funasr import AutoModel',
-    'try:\n    from funasr import AutoModel\nexcept ImportError:\n    AutoModel = None'
-)
-open('tools/server/model_manager.py', 'w').write(patched)
-print('Patched model_manager.py funasr import')
-"
+RUN python3 -c "f='tools/server/model_manager.py'; s=open(f).read(); open(f,'w').write(s.replace('from funasr import AutoModel','try:\n    from funasr import AutoModel\nexcept ImportError:\n    AutoModel = None')); print('Patched funasr import')"
 
 # ── Install Fish Speech inference dependencies ─────────────────────────────────
 RUN pip3 install --no-cache-dir \
@@ -79,7 +71,7 @@ RUN pip3 install --no-cache-dir \
 ENV PYTHONPATH="/app/fish-speech:${PYTHONPATH}"
 
 # ── Cache buster ──────────────────────────────────────────────────────────────
-ARG CACHE_BUST=2026-03-30e
+ARG CACHE_BUST=2026-03-30f
 
 # ── Copy handler ──────────────────────────────────────────────────────────────
 WORKDIR /app
