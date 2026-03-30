@@ -22,10 +22,10 @@ RUN apt-get update && apt-get install -y \
 # ── Upgrade pip ───────────────────────────────────────────────────────────────
 RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel
 
-# ── PyTorch (CUDA 12.1) ───────────────────────────────────────────────────────
+# ── PyTorch 2.4.1 (CUDA 12.1) — required by transformers>=4.45.2 ─────────────
 RUN pip3 install --no-cache-dir \
-    torch==2.3.0 \
-    torchaudio==2.3.0 \
+    torch==2.4.1 \
+    torchaudio==2.4.1 \
     --index-url https://download.pytorch.org/whl/cu121
 
 # ── Clone Fish Speech v1.5.0 ──────────────────────────────────────────────────
@@ -33,9 +33,18 @@ RUN git clone https://github.com/fishaudio/fish-speech.git /app/fish-speech
 WORKDIR /app/fish-speech
 RUN git checkout tags/v1.5.0
 
-# ── Install Fish Speech dependencies from pyproject.toml ─────────────────────
-# Install the package in editable mode — this reads pyproject.toml and installs
-# all declared dependencies automatically (inference + API server only, no training tools)
+# ── Patch model_manager.py: make funasr import optional (ASR only, not TTS) ──
+RUN python3 -c "
+content = open('tools/server/model_manager.py').read()
+patched = content.replace(
+    'from funasr import AutoModel',
+    'try:\n    from funasr import AutoModel\nexcept ImportError:\n    AutoModel = None'
+)
+open('tools/server/model_manager.py', 'w').write(patched)
+print('Patched model_manager.py funasr import')
+"
+
+# ── Install Fish Speech inference dependencies ─────────────────────────────────
 RUN pip3 install --no-cache-dir \
     "numpy<=1.26.4" \
     "transformers>=4.45.2" \
@@ -70,7 +79,7 @@ RUN pip3 install --no-cache-dir \
 ENV PYTHONPATH="/app/fish-speech:${PYTHONPATH}"
 
 # ── Cache buster ──────────────────────────────────────────────────────────────
-ARG CACHE_BUST=2026-03-30d
+ARG CACHE_BUST=2026-03-30e
 
 # ── Copy handler ──────────────────────────────────────────────────────────────
 WORKDIR /app
