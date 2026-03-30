@@ -210,7 +210,7 @@ def call_tts(text, voice_ref_b64, reference_text="", fmt="mp3"):
             }
         ],
         "streaming": False,
-        "normalize": False,  # Preserve emotion tags [happy][sad] etc
+        "normalize": True,
     }
 
     body = json.dumps(payload).encode("utf-8")
@@ -254,6 +254,12 @@ def handler(event):
         return {"error": "Missing text parameter", "success": False}
     if not voice_ref_b64:
         return {"error": "Missing voice_reference parameter", "success": False}
+
+    # Strip emotion tags — Fish Speech API splits on [tag] markers causing pauses.
+    # Fish Speech 1.5 infers emotion naturally from text context + voice reference.
+    import re
+    text = re.sub(r"\[(?:happy|sad|angry|fearful|whisper|surprised|cry|laugh|neutral)\]", "", text, flags=re.IGNORECASE).strip()
+    text = re.sub(r" {2,}", " ", text)  # collapse double spaces left by removed tags
 
     print(f"[HANDLER] Synthesizing {len(text)} chars | format={fmt}", flush=True)
     gen_start = time.time()
