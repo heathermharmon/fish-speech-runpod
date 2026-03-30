@@ -40,6 +40,7 @@ RUN pip3 install --no-cache-dir \
     "numpy<=1.26.4" \
     "transformers>=4.45.2" \
     "hydra-core>=1.3.2" \
+    "lightning>=2.1.0" \
     "natsort>=8.4.0" \
     "einops>=0.7.0" \
     "librosa>=0.10.1" \
@@ -69,7 +70,7 @@ RUN pip3 install --no-cache-dir \
 ENV PYTHONPATH="/app/fish-speech:${PYTHONPATH}"
 
 # ── Cache buster ──────────────────────────────────────────────────────────────
-ARG CACHE_BUST=2026-03-30c
+ARG CACHE_BUST=2026-03-30d
 
 # ── Copy handler ──────────────────────────────────────────────────────────────
 WORKDIR /app
