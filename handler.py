@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
 RunPod Serverless Handler for Fish Speech 1.5 Voice Cloning
-Starts Fish Speech's built-in API server, then proxies requests to it.
+Starts Fish Speech's API server, then proxies requests to it.
 
 Input:
     {
         "input": {
-            "text": "Text to synthesize (supports [happy] [sad] [angry] [whisper] tags)",
+            "text": "Text (supports [happy] [sad] [angry] [whisper] [cry] tags)",
             "voice_reference": "<base64_encoded_audio>",
             "reference_text": "Optional transcript of reference audio",
-            "format": "mp3"  // optional, default mp3
+            "format": "mp3"
         }
     }
 
@@ -31,7 +31,6 @@ import time
 import subprocess
 import tempfile
 import wave
-import struct
 import urllib.request
 import urllib.error
 
@@ -46,26 +45,36 @@ _server_process = None
 _server_ready = False
 
 
-def get_audio_duration(audio_bytes, fmt="mp3"):
-    """Estimate audio duration from byte size (fallback)."""
-    if fmt == "mp3":
-        # ~192kbps = 24000 bytes/sec
-        return round(len(audio_bytes) / 24000, 1)
-    elif fmt == "wav":
-        try:
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-                f.write(audio_bytes)
-                tmp = f.name
-            with wave.open(tmp, "r") as w:
-                dur = w.getnframes() / float(w.getframerate())
-            os.unlink(tmp)
-            return round(dur, 1)
-        except Exception:
-            return round(len(audio_bytes) / 88200, 1)
-    return 0.0
+def download_model():
+    """Download Fish Speech 1.5 model weights from HuggingFace if not present."""
+    if os.path.isdir(CHECKPOINT_DIR) and len(os.listdir(CHECKPOINT_DIR)) > 3:
+        print(f"✅ [STARTUP] Model already present at {CHECKPOINT_DIR}")
+        return True
+
+    print("⬇️  [STARTUP] Downloading Fish Speech 1.5 model (~5GB)...")
+    try:
+        from huggingface_hub import snapshot_download
+        snapshot_download(
+            "fishaudio/fish-speech-1.5",
+            local_dir=CHECKPOINT_DIR,
+            ignore_patterns=["*.git*", "*.gitattributes"],
+        )
+        print("✅ [STARTUP] Model downloaded successfully")
+        return True
+    except Exception as e:
+        print(f"❌ [STARTUP] Model download failed: {e}")
+        return False
 
 
-def wait_for_server(timeout=180):
+def _has_cuda():
+    try:
+        import torch
+        return torch.cuda.is_available()
+    except Exception:
+        return False
+
+
+def wait_for_server(timeout=240):
     """Poll /v1/health until Fish Speech API server is ready."""
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -82,7 +91,7 @@ def wait_for_server(timeout=180):
                     return True
         except Exception:
             pass
-        time.sleep(2)
+        time.sleep(3)
     return False
 
 
@@ -93,22 +102,19 @@ def start_server():
     if _server_ready:
         return True
 
-    print("🚀 [HANDLER] Starting Fish Speech 1.5 API server...")
+    # Locate decoder checkpoint file
+    decoder_pth = os.path.join(
+        CHECKPOINT_DIR, "firefly-gan-vq-fsq-8x1024-21hz-generator.pth"
+    )
+    if not os.path.exists(decoder_pth):
+        # Try to find any .pth file
+        for fname in os.listdir(CHECKPOINT_DIR):
+            if fname.endswith(".pth"):
+                decoder_pth = os.path.join(CHECKPOINT_DIR, fname)
+                break
 
-    # Verify checkpoint exists
-    if not os.path.isdir(CHECKPOINT_DIR):
-        print(f"❌ [HANDLER] Checkpoint not found at {CHECKPOINT_DIR}")
-        return False
-
-    # Locate decoder .pth file
-    decoder_pth = None
-    for fname in os.listdir(CHECKPOINT_DIR):
-        if fname.endswith(".pth") and "firefly" in fname.lower():
-            decoder_pth = os.path.join(CHECKPOINT_DIR, fname)
-            break
-    if not decoder_pth:
-        # Fall back: let api_server use its default path
-        decoder_pth = os.path.join(CHECKPOINT_DIR, "firefly-gan-vq-fsq-8x1024-21hz-generator.pth")
+    device = "cuda" if _has_cuda() else "cpu"
+    print(f"🚀 [SERVER] Starting Fish Speech API server on {device}...")
 
     cmd = [
         sys.executable,
@@ -117,7 +123,7 @@ def start_server():
         "--listen", f"0.0.0.0:{API_PORT}",
         "--llama-checkpoint-path", CHECKPOINT_DIR,
         "--decoder-checkpoint-path", decoder_pth,
-        "--device", "cuda" if _has_cuda() else "cpu",
+        "--device", device,
     ]
 
     env = os.environ.copy()
@@ -131,32 +137,43 @@ def start_server():
         stderr=sys.stderr,
     )
 
-    print(f"🔄 [HANDLER] Server PID {_server_process.pid}, waiting for ready...")
-    if wait_for_server(timeout=180):
+    print(f"🔄 [SERVER] PID {_server_process.pid}, waiting for ready (up to 4 min)...")
+
+    if wait_for_server(timeout=240):
         _server_ready = True
-        print("✅ [HANDLER] Fish Speech API server is ready!")
+        print("✅ [SERVER] Fish Speech API server is ready!")
         return True
     else:
-        print("❌ [HANDLER] Fish Speech API server failed to start within 180s")
+        print("❌ [SERVER] Fish Speech API server failed to start within 4 min")
         return False
 
 
-def _has_cuda():
-    try:
-        import torch
-        return torch.cuda.is_available()
-    except Exception:
-        return False
+def get_audio_duration_estimate(audio_bytes, fmt="mp3"):
+    """Estimate audio duration from file size."""
+    if fmt == "mp3":
+        return round(len(audio_bytes) / 24000, 1)
+    elif fmt == "wav":
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                f.write(audio_bytes)
+                tmp = f.name
+            with wave.open(tmp, "r") as w:
+                dur = w.getnframes() / float(w.getframerate())
+            os.unlink(tmp)
+            return round(dur, 1)
+        except Exception:
+            return round(len(audio_bytes) / 88200, 1)
+    return 0.0
 
 
 def call_tts(text, voice_ref_b64, reference_text="", fmt="mp3"):
-    """Call the local Fish Speech API server and return raw audio bytes."""
+    """POST to local Fish Speech API server, return raw audio bytes."""
     payload = {
         "text": text,
         "format": fmt,
         "references": [
             {
-                "audio": voice_ref_b64,   # base64 string — schema auto-decodes it
+                "audio": voice_ref_b64,
                 "text": reference_text or "",
             }
         ],
@@ -179,7 +196,6 @@ def call_tts(text, voice_ref_b64, reference_text="", fmt="mp3"):
 def handler(event):
     global _server_ready
 
-    # Start server on first request (cold start)
     if not _server_ready:
         if not start_server():
             return {"error": "Fish Speech server failed to start", "success": False}
@@ -196,8 +212,6 @@ def handler(event):
         return {"error": "Missing voice_reference parameter", "success": False}
 
     print(f"🎤 [HANDLER] Synthesizing {len(text)} chars | format={fmt}")
-    if reference_text:
-        print(f"📝 [HANDLER] Reference text: {len(reference_text)} chars")
 
     gen_start = time.time()
 
@@ -206,19 +220,20 @@ def handler(event):
     except urllib.error.HTTPError as e:
         err_body = e.read().decode("utf-8", errors="replace")
         print(f"❌ [HANDLER] API error {e.code}: {err_body[:300]}")
-        return {"error": f"Fish Speech API error {e.code}: {err_body[:200]}", "success": False}
+        return {"error": f"Fish Speech error {e.code}: {err_body[:200]}", "success": False}
     except Exception as e:
         print(f"❌ [HANDLER] TTS call failed: {e}")
         return {"error": str(e), "success": False}
 
     gen_time = round(time.time() - gen_start, 2)
-    duration = get_audio_duration(audio_bytes, fmt)
+    duration = get_audio_duration_estimate(audio_bytes, fmt)
+    audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
 
-    print(f"✅ [HANDLER] Generated {duration}s audio in {gen_time}s ({len(audio_bytes)//1024}KB)")
+    print(f"✅ [HANDLER] Generated {duration}s in {gen_time}s ({len(audio_bytes)//1024}KB)")
 
     return {
         "success": True,
-        "audio_base64": base64.b64encode(audio_bytes).decode("utf-8"),
+        "audio_base64": audio_b64,
         "duration": duration,
         "generation_time": gen_time,
         "text_length": len(text),
@@ -227,5 +242,12 @@ def handler(event):
 
 
 if __name__ == "__main__":
-    print("🚀 [HANDLER] RunPod Serverless Handler (Fish Speech 1.5) starting...")
+    print("🚀 [STARTUP] Fish Speech 1.5 RunPod Serverless Handler")
+
+    # Download model at startup (before accepting jobs)
+    if not download_model():
+        print("❌ [STARTUP] Cannot proceed without model. Exiting.")
+        sys.exit(1)
+
+    print("🎯 [STARTUP] Starting RunPod serverless worker loop...")
     runpod.serverless.start({"handler": handler})
